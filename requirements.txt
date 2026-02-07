@@ -1,0 +1,54 @@
+# Ghana Speech-to-Speech Pipeline Requirements
+# =============================================
+# Install with: pip install -r requirements.txt
+
+# Core PyTorch (install first with CUDA support)
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Transformers & Training
+transformers>=4.36.0
+accelerate>=0.25.0
+datasets>=2.14.0
+peft>=0.7.0
+bitsandbytes>=0.41.0
+safetensors>=0.4.0
+
+# Audio Processing
+librosa>=0.10.0
+soundfile>=0.12.0
+scipy>=1.11.0
+audioread>=3.0.0
+
+# TTS (Coqui)
+TTS>=0.22.0
+
+# Data Processing
+pandas>=2.0.0
+openpyxl>=3.1.0
+numpy>=1.24.0
+tqdm>=4.66.0
+requests>=2.31.0
+
+# API & Serving
+fastapi>=0.104.0
+uvicorn>=0.24.0
+gradio>=4.0.0
+python-multipart>=0.0.6
+pydantic>=2.0.0
+aiofiles>=23.0.0
+
+# Evaluation Metrics
+jiwer>=3.0.0
+evaluate>=0.4.0
+sacrebleu>=2.3.0
+
+# Jupyter
+jupyter>=1.0.0
+ipywidgets>=8.0.0
+
+# Optional: For development
+# pytest>=7.4.0
+# black>=23.0.0
+# isort>=5.12.0
