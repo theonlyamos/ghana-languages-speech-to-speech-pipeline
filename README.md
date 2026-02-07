@@ -233,7 +233,7 @@ config.tts.epochs = 10
 }
 
 @article{costa2022nllb,
-  title={No Language Left Behind},
+  title={No Language Left Behind: Scaling Human-Centered Machine Translation},
   author={Costa-jussà, Marta R and others},
   journal={arXiv preprint arXiv:2207.04672},
   year={2022}
