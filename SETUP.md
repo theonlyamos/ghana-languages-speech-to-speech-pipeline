@@ -146,6 +146,36 @@ uv pip install -r requirements.txt
 
 ---
 
+## Option 4: Train on Google Colab (CLI) — no local GPU
+
+If you don't have a 24GB GPU, skip the local CUDA setup and train on a remote
+Colab GPU using the official **Google Colab CLI**. The CLI runs locally and
+provisions a remote runtime, so you only need the CLI installed — not PyTorch,
+CUDA, or the project dependencies on your own machine.
+
+```bash
+# Install the CLI (needs Python >= 3.12 locally)
+uv tool install google-colab-cli
+
+# Authenticate once (Application Default Credentials)
+gcloud auth application-default login \
+  --scopes=openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/colaboratory
+
+# Train end-to-end on a remote GPU
+bash scripts/colab_train.sh --gpu L4
+```
+
+> **Windows:** the Colab CLI supports **Linux and macOS only**. On Windows 11,
+> run the CLI inside **WSL2** (`wsl --install -d Ubuntu`).
+>
+> **GPU access is tier-gated** — T4/L4/A100 generally require Colab
+> Pro/Pro+/Pay-As-You-Go; free accounts often get CPU only.
+
+See **[COLAB_CLI.md](COLAB_CLI.md)** for the full guide (auth, GPU selection,
+dataset handling, and a command cheat-sheet).
+
+---
+
 ## System Dependencies
 
 ### Linux (Ubuntu/Debian)

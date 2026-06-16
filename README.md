@@ -69,13 +69,14 @@ sudo apt-get install espeak-ng
 jupyter notebook ghana_s2s_pipeline.ipynb
 ```
 
-The notebook contains 7 main parts:
+The notebook is organized into 8 parts (Part 0–7):
 
-1. Setup & System Verification
-2. Dataset Download & Organization
-3. Data Processing & Preparation
-4. Model Training (ASR, TTS, Translation)
-5. Unified Pipeline & Inference (including Language Detection)
+0. Setup & System Verification
+1. Dataset Download & Organization
+2. Data Processing & Preparation
+3. Model Training (ASR, TTS, Translation)
+4. Unified Pipeline & Inference (including Language Detection)
+5. Evaluation & Benchmarking
 6. Deployment & Serving
 7. Upload Models to HuggingFace
 
@@ -136,6 +137,58 @@ launch_gradio(share=True)  # Opens browser with Gradio interface
 python -m uvicorn utils.serving:create_fastapi_app --host 0.0.0.0 --port 8000
 ```
 
+### Run a Trained Model from the CLI
+
+Run one-shot inference without writing any code:
+
+```bash
+# Full speech-to-speech: auto-detect language, transcribe, translate, synthesize
+python scripts/infer.py audio.wav --target eng --output out.wav
+
+# Transcribe only / detect language only / translate text only
+python scripts/infer.py audio.wav --task transcribe
+python scripts/infer.py audio.wav --task detect
+python scripts/infer.py --task translate --text "Maakye" --source aka --target eng
+```
+
+`infer.py` auto-loads fine-tuned weights from `models/asr` and `models/tts` when
+present (where training writes them) and falls back to the base MMS/NLLB/XTTS
+models otherwise. Use `--asr-model-path` / `--tts-model-path` to point elsewhere,
+`--base` to force the base models, `--no-speak` to skip synthesis, or `--json`
+for machine-readable output.
+
+The serving CLI accepts the same checkpoint flags, so the web UI / REST API serve
+your fine-tuned models too:
+
+```bash
+python -m utils.serving --mode gradio    # or: --mode fastapi
+# add --asr-model-path / --tts-model-path / --base to choose which weights to serve
+```
+
+## Training on Google Colab (CLI)
+
+Don't have a 24GB GPU locally? Train on a remote Colab GPU straight from your
+terminal with the official **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)**.
+It provisions a GPU runtime, runs the training notebook on it, and pulls the
+trained models back to your machine.
+
+```bash
+# Install + authenticate (one time)
+uv tool install google-colab-cli
+gcloud auth application-default login \
+  --scopes=openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/colaboratory
+
+# Train (provision GPU -> install deps -> run notebook -> download models -> stop)
+bash scripts/colab_train.sh --gpu L4
+```
+
+> **Windows users:** the Colab CLI runs on Linux/macOS only — use **WSL2**.
+> **GPU access is tier-gated** (T4/L4/A100 generally need Colab Pro/Pro+/Pay-As-You-Go),
+> and an unstopped session burns compute units until a 24h cap, so always `colab stop`.
+
+**Full guide:** [COLAB_CLI.md](COLAB_CLI.md) — authentication, GPU selection,
+handling the large datasets, one-shot `colab run` jobs, and a command cheat-sheet.
+
 ## Project Structure
 
 ```
@@ -143,6 +196,11 @@ ghana_sts_model/
 ├── ghana_s2s_pipeline.ipynb  # Main comprehensive notebook
 ├── config.py                  # Central configuration
 ├── requirements.txt           # Python dependencies
+├── SETUP.md                   # Local environment setup guide
+├── COLAB_CLI.md               # Train on Google Colab GPUs via the CLI
+├── scripts/
+│   ├── colab_train.sh        # One-command Colab CLI training workflow
+│   └── infer.py              # One-shot CLI inference (trained or base models)
 ├── utils/
 │   ├── __init__.py
 │   ├── data_processing.py    # Dataset utilities
@@ -165,7 +223,7 @@ The pipeline primarily uses the following datasets:
 | ----------------------------------------------------------------------------------------- | ----------------------------------- | ------ | ------------ |
 | [UGSpeechData](https://www.scidb.cn/en/detail?dataSetId=bbd6baee3acf43bbbc4fe25e21077c8a) | Akan, Ewe, Dagbani, Dagaare, Ikposo | ~336GB | ASR Training |
 | [FISD](https://github.com/Ashesi-Org/Financial-Inclusion-Speech-Dataset)                  | Ga, Fante, Akuapem Twi, Asante Twi  | ~1.2GB | Domain ASR   |
-| [BibleTTS](http://www.openslr.org/129/)                                                   | Asante Twi, Akuapem Twi, Ewe        | ~50GB  | TTS Training |
+| [BibleTTS](http://www.openslr.org/129/)                                                   | Asante Twi, Akuapem Twi, Ewe, Hausa | ~50GB  | TTS Training |
 
 - **UGSpeechData**: Multilingual speech dataset of Ghanaian languages ([SciDB](https://www.scidb.cn/en/detail?dataSetId=bbd6baee3acf43bbbc4fe25e21077c8a)).
 - **FISD**: Financial Inclusion Speech Dataset by Ashesi University and Nokwary Technologies (~148 hours, CC-BY-4.0) ([GitHub](https://github.com/Ashesi-Org/Financial-Inclusion-Speech-Dataset)).
@@ -191,6 +249,10 @@ Use `language="auto"` to automatically detect the input language.
 ## Cheap GPU VPS / Cloud Options
 
 For running the pipeline without a local GPU, these platforms offer affordable GPU instances with 24GB+ VRAM. Prices change; check each provider’s pricing page for current rates.
+
+> **Prefer Google Colab?** You can also train directly on Colab GPUs from your
+> terminal with the Google Colab CLI — see [Training on Google Colab (CLI)](#training-on-google-colab-cli)
+> and [COLAB_CLI.md](COLAB_CLI.md).
 
 | Provider | Best for | 24GB GPU (e.g. RTX 3090) | Notes |
 | -------- | -------- | ------------------------- | ----- |

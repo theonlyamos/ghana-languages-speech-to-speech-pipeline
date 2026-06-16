@@ -567,13 +567,18 @@ class ASRDatasetFormatter:
         """
         # Filter to existing files
         df = df[df[audio_column].apply(lambda x: Path(x).exists())]
-        
+
+        # Standardize the audio column name to "audio" so downstream
+        # format_for_mms (which reads and removes "audio") works consistently.
+        if audio_column != "audio":
+            df = df.rename(columns={audio_column: "audio"})
+
         # Create dataset
         dataset = Dataset.from_pandas(df)
-        
+
         # Cast audio column
-        dataset = dataset.cast_column(audio_column, Audio(sampling_rate=sample_rate))
-        
+        dataset = dataset.cast_column("audio", Audio(sampling_rate=sample_rate))
+
         return dataset
     
     def create_train_val_test_split(
@@ -632,7 +637,7 @@ class ASRDatasetFormatter:
         """
         def prepare_example(batch):
             audio = batch["audio"]
-            
+
             # Process audio
             inputs = processor(
                 audio["array"],
@@ -640,17 +645,20 @@ class ASRDatasetFormatter:
                 return_tensors="pt",
                 padding=True
             )
-            
-            # Encode text
-            with processor.as_target_processor():
-                labels = processor(batch["transcription"]).input_ids
-            
+
+            # Encode text labels. Use the tokenizer directly — processor.as_target_processor()
+            # is deprecated/removed in current transformers.
+            labels = processor.tokenizer(batch["transcription"]).input_ids
+
             batch["input_values"] = inputs.input_values[0]
             batch["labels"] = labels
-            
+
             return batch
-        
-        return dataset.map(prepare_example, remove_columns=["audio"])
+
+        # Drop ALL original columns (transcription, speaker, audio, __index_level_0__,
+        # etc.) so per-language schemas match when datasets are concatenated, and only
+        # input_values + labels reach the collator.
+        return dataset.map(prepare_example, remove_columns=dataset.column_names)
 
 
 # ============================================================================

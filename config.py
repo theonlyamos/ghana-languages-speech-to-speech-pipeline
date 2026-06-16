@@ -128,20 +128,23 @@ class ASRConfig:
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = field(default_factory=lambda: ["q_proj", "v_proj"])
     
-    # Quantization
-    use_8bit: bool = True
+    # Quantization: 8-bit is for memory-constrained (<16GB) GPUs. On the recommended
+    # 24GB GPUs (Colab L4/A100) keep this False — fp16 fits easily and avoids friction
+    # between bitsandbytes, the MMS language adapter, and LoRA.
+    use_8bit: bool = False
     
     # Audio settings
     sample_rate: int = 16000
     
-    # Training settings (optimized for RTX 3090/4090)
+    # Training settings (recommended for 24GB GPUs — Colab L4/A100, RTX 3090/4090)
     batch_size: int = 4
-    gradient_accumulation_steps: int = 4
+    gradient_accumulation_steps: int = 4  # effective batch size = 16
     learning_rate: float = 1e-4
     num_epochs: int = 5
     warmup_steps: int = 100
-    max_steps: int = 2000
+    max_steps: int = 2000  # caps training; set to -1 to train for full num_epochs
     fp16: bool = True
+    gradient_checkpointing: bool = True  # trades compute for memory
     
     # Checkpointing
     save_steps: int = 200
@@ -171,10 +174,10 @@ class TTSConfig:
         "dag": "Dagbani_Speaker"
     })
     
-    # Training settings (optimized for RTX 3090/4090)
-    batch_size: int = 2
+    # Training settings (recommended for 24GB GPUs — Colab L4/A100, RTX 3090/4090)
+    batch_size: int = 2  # safe for 16-24GB; L4/A100 can go to 3-4 for speed
     num_loader_workers: int = 4
-    epochs: int = 10
+    epochs: int = 6  # balanced Colab default; 10+ best quality (multi-day on full data), 2-3 for quick sample runs
     learning_rate: float = 5e-6
     
     # We use 'en' as carrier language for XTTS (trick for unsupported languages)
@@ -191,10 +194,17 @@ class TTSConfig:
 
 @dataclass
 class TranslationConfig:
-    """Configuration for Translation (Machine Translation) model."""
-    
-    # Model
-    model_id: str = "facebook/nllb-200-distilled-600M"  # Use "3.3B" for better quality
+    """Configuration for Translation (Machine Translation) model.
+
+    NLLB-200 is used as a PRETRAINED model — it is NOT fine-tuned by this
+    pipeline (inference only). Note: NLLB-200 covers Akan (aka_Latn) and Ewe
+    (ewe_Latn), but NOT Ga or Dagbani — those map to codes NLLB does not
+    support, so their translations are unreliable without a fine-tuned model
+    and parallel data (which this project does not include).
+    """
+
+    # Model (pretrained, not trained). Use the 3.3B variant for better quality.
+    model_id: str = "facebook/nllb-200-distilled-600M"
     
     # NLLB language codes
     lang_codes: Dict[str, str] = field(default_factory=lambda: {

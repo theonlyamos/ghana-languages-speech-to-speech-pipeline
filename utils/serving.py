@@ -772,15 +772,33 @@ def main():
     parser.add_argument("--port", type=int, default=7860, help="Port number")
     parser.add_argument("--host", default="0.0.0.0", help="Host address")
     parser.add_argument("--share", action="store_true", help="Create public Gradio link")
-    
+    parser.add_argument("--asr-model-path",
+                        help="ASR checkpoint dir (default: trained dir if present, else base MMS).")
+    parser.add_argument("--tts-model-path",
+                        help="TTS checkpoint dir (default: trained dir if present, else base XTTS).")
+    parser.add_argument("--base", action="store_true",
+                        help="Serve the base models instead of auto-loading trained checkpoints.")
+
     args = parser.parse_args()
-    
-    if args.mode == "gradio":
-        launch_gradio(share=args.share, port=args.port)
-    elif args.mode == "fastapi":
-        run_fastapi(host=args.host, port=args.port)
-    elif args.mode == "docker":
+
+    if args.mode == "docker":
         generate_docker_files()
+        return
+
+    # Build the pipeline once, loading trained checkpoints when available.
+    from .pipeline import GhanaS2SPipeline, resolve_model_paths
+    asr_path, tts_path = resolve_model_paths(
+        asr_model_path=args.asr_model_path,
+        tts_model_path=args.tts_model_path,
+        use_base=args.base,
+    )
+    print(f"[serve] ASR weights: {asr_path or 'base'} | TTS weights: {tts_path or 'base'}")
+    pipeline = GhanaS2SPipeline(asr_model_path=asr_path, tts_model_path=tts_path)
+
+    if args.mode == "gradio":
+        launch_gradio(pipeline=pipeline, share=args.share, port=args.port)
+    elif args.mode == "fastapi":
+        run_fastapi(pipeline=pipeline, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ torch>=2.0.0
 torchaudio>=2.0.0
 
 # Transformers & Training
-transformers>=4.36.0
+transformers>=4.46.0  # >=4.46 for Trainer(processing_class=...) used in ASR training
 accelerate>=0.25.0
 datasets>=2.14.0
 peft>=0.7.0

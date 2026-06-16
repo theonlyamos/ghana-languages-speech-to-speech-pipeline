@@ -1,0 +1,76 @@
+# ============================================================================
+# Ghana Speech-to-Speech Pipeline — .gitignore
+# ============================================================================
+
+# ---- Project data & artifacts (large; created on first run / by training) --
+# Downloaded datasets (UGSpeechData ~336GB, BibleTTS ~50GB, FISD, ...)
+data/
+# Trained ASR/TTS checkpoints
+models/
+# Generated audio files
+outputs/
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Model / checkpoint weights
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.gguf
+
+# ---- Notebook execution artifacts (the source notebook stays tracked) ------
+.ipynb_checkpoints/
+# Written by `colab exec -f <nb>.ipynb`
+*_output.ipynb
+# Written by scripts/colab_train.sh
+training_log.ipynb
+
+# ---- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Virtual environments --------------------------------------------------
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# ---- Caches (Hugging Face / Torch / datasets) ------------------------------
+.cache/
+hf_cache/
+*.lock
+
+# ---- Secrets & local config ------------------------------------------------
+.env
+.env.*
+*.secret
+# Google Colab CLI local OAuth config (if ever placed in-repo)
+.colab-cli-oauth-config.json
+
+# ---- Editors / IDEs --------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---- OS --------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini

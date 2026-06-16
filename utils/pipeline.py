@@ -68,6 +68,66 @@ class S2SResult:
 
 
 # ============================================================================
+# CHECKPOINT RESOLUTION
+# ============================================================================
+def resolve_model_paths(
+    asr_model_path: Optional[Union[str, Path]] = None,
+    tts_model_path: Optional[Union[str, Path]] = None,
+    use_base: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Resolve which ASR/TTS weights to load for inference or serving.
+
+    Precedence, per model:
+      1. An explicit path passed in (returned as-is).
+      2. A fine-tuned checkpoint found in the config output dir
+         (``config.asr.output_dir`` / ``config.tts.output_dir`` — where training
+         writes its results).
+      3. ``None`` -> the base model is used (``facebook/mms-1b-all`` / XTTS v2).
+
+    Detection mirrors how ``GhanaS2SPipeline`` loads each model:
+      - ASR: a Hugging Face dir containing ``config.json`` (merged weights) or
+        ``adapter_config.json`` (a LoRA/PEFT adapter).
+      - TTS: a Coqui dir containing ``best_model.pth``.
+
+    Args:
+        asr_model_path: Explicit ASR checkpoint dir, or None to auto-resolve.
+        tts_model_path: Explicit TTS checkpoint dir, or None to auto-resolve.
+        use_base: Skip auto-detection and force the base models. Explicit paths
+            are still honored.
+
+    Returns:
+        ``(asr_model_path, tts_model_path)`` as strings, or None meaning "use the
+        base model".
+    """
+    asr = str(asr_model_path) if asr_model_path else None
+    tts = str(tts_model_path) if tts_model_path else None
+
+    if use_base:
+        return asr, tts
+
+    if asr is None:
+        # The notebook saves the fine-tuned ASR to <output_dir>/final; also accept
+        # the output_dir root (for a full model saved there directly).
+        base = Path(config.asr.output_dir)
+        for cand in (base / "final", base):
+            if (cand / "adapter_config.json").exists() or (cand / "config.json").exists():
+                asr = str(cand)
+                break
+
+    if tts is None:
+        # Coqui writes best_model.pth into a timestamped run subdir under output_dir;
+        # also accept it at the root. Pick the most recently modified match.
+        base = Path(config.tts.output_dir)
+        candidates = [base] if (base / "best_model.pth").exists() else []
+        candidates += [p.parent for p in base.glob("*/best_model.pth")]
+        if candidates:
+            tts = str(max(candidates, key=lambda p: p.stat().st_mtime))
+
+    return asr, tts
+
+
+# ============================================================================
 # GHANA S2S PIPELINE
 # ============================================================================
 class GhanaS2SPipeline:
@@ -165,13 +225,26 @@ class GhanaS2SPipeline:
         print(f"  Supports {len(self.lid_labels)} languages including Ghanaian languages")
     
     def _load_asr(self):
-        """Load ASR (MMS) model."""
+        """Load ASR (MMS) model.
+
+        Supports the base model, a full fine-tuned model, or a LoRA/PEFT adapter
+        directory (which is what the training notebook saves). An adapter is
+        applied on top of the base MMS model rather than loaded directly.
+        """
         from transformers import Wav2Vec2ForCTC, AutoProcessor
-        
+
         print("Loading ASR Model (The Ear)...")
-        
+
         model_id = self.asr_model_path or config.asr.model_id
-        
+
+        # A fine-tuned checkpoint saved by the notebook is a LoRA adapter, which
+        # cannot be loaded directly with from_pretrained — detect and handle it.
+        is_adapter = bool(
+            self.asr_model_path
+            and Path(self.asr_model_path, "adapter_config.json").exists()
+        )
+        base_id = config.asr.model_id if is_adapter else model_id
+
         if self.use_8bit and self.device == "cuda":
             from transformers import BitsAndBytesConfig
             bnb_config = BitsAndBytesConfig(
@@ -179,18 +252,43 @@ class GhanaS2SPipeline:
                 llm_int8_threshold=6.0
             )
             self.asr_model = Wav2Vec2ForCTC.from_pretrained(
-                model_id,
+                base_id,
                 quantization_config=bnb_config,
                 device_map="auto"
             )
         else:
-            self.asr_model = Wav2Vec2ForCTC.from_pretrained(model_id).to(self.device)
-        
-        self.asr_processor = AutoProcessor.from_pretrained(model_id)
-        
+            self.asr_model = Wav2Vec2ForCTC.from_pretrained(base_id).to(self.device)
+
+        # Apply the fine-tuned LoRA adapter on top of the base model, if present.
+        self.is_finetuned_asr = is_adapter
+        self._finetuned_lang = None
+        if is_adapter:
+            import json
+            from peft import PeftModel
+            # The language-specific MMS head lives in the BASE model, not in the LoRA
+            # weights, so restore the adapter for the fine-tuned language first
+            # (recorded by the training notebook in ghana_asr_meta.json).
+            meta_path = Path(self.asr_model_path, "ghana_asr_meta.json")
+            if meta_path.exists():
+                lang = json.loads(meta_path.read_text(encoding="utf-8")).get("language")
+                if lang:
+                    try:
+                        self.asr_model.load_adapter(lang)
+                        self._finetuned_lang = lang
+                    except Exception as e:
+                        warnings.warn(f"Could not load MMS language adapter '{lang}': {e}")
+            self.asr_model = PeftModel.from_pretrained(self.asr_model, self.asr_model_path)
+            print(f"  Applied fine-tuned LoRA adapter from: {self.asr_model_path}")
+
+        # Load the processor from the checkpoint if it ships one, else the base.
+        try:
+            self.asr_processor = AutoProcessor.from_pretrained(model_id)
+        except Exception:
+            self.asr_processor = AutoProcessor.from_pretrained(config.asr.model_id)
+
         # Set default language
         self._current_asr_lang = None
-        
+
         print(f"  Loaded: {model_id}")
     
     def _load_translation(self):
@@ -244,6 +342,21 @@ class GhanaS2SPipeline:
         Args:
             lang_code: ISO 639-3 language code (aka, ewe, gaa, dag, eng)
         """
+        # A fine-tuned (LoRA) model is already language-specialized, and calling
+        # load_adapter() on a PEFT-wrapped model would fail — just set the target.
+        if getattr(self, "is_finetuned_asr", False):
+            ft = getattr(self, "_finetuned_lang", None)
+            if ft and lang_code != ft:
+                warnings.warn(
+                    f"ASR was fine-tuned for '{ft}' but '{lang_code}' was requested; "
+                    f"the acoustic head stays on '{ft}', so transcription may be wrong. "
+                    f"Use language='{ft}' (or 'auto')."
+                )
+            if self._current_asr_lang != lang_code:
+                self.asr_processor.tokenizer.set_target_lang(lang_code)
+                self._current_asr_lang = lang_code
+            return
+
         if self._current_asr_lang != lang_code:
             self.asr_processor.tokenizer.set_target_lang(lang_code)
             self.asr_model.load_adapter(lang_code)
