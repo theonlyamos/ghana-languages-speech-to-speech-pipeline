@@ -188,6 +188,16 @@ Each voice lives in `models/tts_f5/<name>/` with its checkpoints, `vocab.txt` an
 other.wav` to clone a different voice. Training resumes from `model_last.pt` if
 interrupted. Note: the pretrained F5 weights are CC-BY-NC (non-commercial).
 
+**On Google Colab** (via the Colab CLI, see below) the whole thing is one command. It
+downloads BibleTTS on the VM, trains, and pulls back only `models/tts_f5/<name>`:
+
+```bash
+bash scripts/colab_train.sh --gpu L4 --f5 twi --f5-limit 500 --f5-epochs 2   # smoke run
+bash scripts/colab_train.sh --gpu A100 --f5 twi                              # full voice
+```
+
+Add `--branch <name>` to train code that isn't on `main` yet.
+
 ## Training on Google Colab (CLI)
 
 Don't have a 24GB GPU locally? Train on a remote Colab GPU straight from your
