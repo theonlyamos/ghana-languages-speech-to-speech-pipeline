@@ -172,9 +172,10 @@ and is simpler to fine-tune. Its pretrained alphabet already includes ɛ, ɔ and
 any other symbol in your data is added automatically.
 
 ```bash
-# 1. BibleTTS Asante Twi (download in notebook Part 1.3) -> F5 dataset + reference clip
-python scripts/train_tts_f5.py prepare --input data/raw/bibletis/asante_twi --name twi
-#    add --limit 500 for a quick smoke run first
+# 1. BibleTTS Asante Twi (download in notebook Part 1.3) + Hugging Face sources
+#    -> one F5 dataset + reference clip (taken from the first source listed)
+python scripts/train_tts_f5.py prepare --name twi --input data/raw/bibletis/asante_twi     --source waxal_twi --source loud_lounge --source twi_multispeaker
+#    add --limit 200 (per source) for a quick smoke run first
 
 # 2. Fine-tune F5TTS_v1_Base (24 GB GPU; lower --batch-frames if you run out of memory)
 python scripts/train_tts_f5.py train --name twi --epochs 20
@@ -183,10 +184,26 @@ python scripts/train_tts_f5.py train --name twi --epochs 20
 python scripts/infer.py --task speak --text "Maakye, wo ho te sɛn?" --output twi.wav
 ```
 
+| `--source` | Data | Size used | License |
+| --- | --- | --- | --- |
+| `--input` BibleTTS | Studio Bible readings, one speaker | Twi, Ewe | CC-BY-SA-4.0 |
+| `waxal_twi` / `waxal_fante` / `waxal_ewe` | [Google WAXAL](https://huggingface.co/datasets/google/WaxalNLP) studio voice actors | ~1–1.5k clips each | CC-BY-4.0 |
+| `loud_lounge` | [Conversational podcast Twi](https://huggingface.co/datasets/ghanaopenai/loud-lounge-twi-tts) (lines with numerals skipped) | up to ~65 h | CC-BY-NC-4.0 |
+| `twi_multispeaker` | [Single-speaker Twi clips](https://huggingface.co/datasets/ghanaopenai/twi-multispeaker-tts), kept only if DNSMOS ≥ 3 and ≥ 70 % speech | up to ~90 h | CC-BY-NC-4.0 |
+
+Hugging Face sources are streamed, so only kept clips are written to disk (as
+24 kHz wavs). Mixing speakers is fine: F5 clones the voice of the reference clip,
+and the extra speakers teach it natural Twi rhythm. `sources.json` in the dataset
+and voice folders records what went in; a model trained on NC data is itself
+non-commercial, so use `--commercial-only` if you need a commercially usable voice.
+
 Each voice lives in `models/tts_f5/<name>/` with its checkpoints, `vocab.txt` and a
 `ref.wav`/`ref.txt` reference clip that sets the speaking style. Pass `--speaker-ref
 other.wav` to clone a different voice. Training resumes from `model_last.pt` if
 interrupted. Note: the pretrained F5 weights are CC-BY-NC (non-commercial).
+
+**As a notebook:** [`train_tts_f5.ipynb`](train_tts_f5.ipynb) runs the same steps
+(setup, data, training, listening test, saving) and opens directly in Colab.
 
 **On Google Colab** (via the Colab CLI, see below) the whole thing is one command. It
 downloads BibleTTS on the VM, trains, and pulls back only `models/tts_f5/<name>`:
@@ -227,6 +244,7 @@ handling the large datasets, one-shot `colab run` jobs, and a command cheat-shee
 ```
 ghana_sts_model/
 ├── ghana_s2s_pipeline.ipynb  # Main comprehensive notebook
+├── train_tts_f5.ipynb        # Natural Twi voice (F5-TTS) training notebook
 ├── config.py                  # Central configuration
 ├── requirements.txt           # Python dependencies
 ├── SETUP.md                   # Local environment setup guide

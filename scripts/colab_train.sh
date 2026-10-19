@@ -30,6 +30,10 @@
 #                       and pull back models/tts_f5/NAME
 #   --f5-lang LANG      BibleTTS language for --f5: asante_twi | akuapem_twi | ewe
 #                       (default: asante_twi)
+#   --f5-sources LIST   Extra Hugging Face sources for --f5, comma-separated
+#                       (see HF_SOURCES in scripts/train_tts_f5.py; "none" for
+#                       BibleTTS only). Default for Twi:
+#                       waxal_twi,loud_lounge,twi_multispeaker ; for Ewe: waxal_ewe
 #   --f5-epochs N       Training epochs for --f5                  (default: 20)
 #   --f5-limit N        Use only N clips for --f5 (quick smoke run; default: all)
 #   --requirements FILE Local requirements file installed on the VM
@@ -59,6 +63,7 @@ F5_NAME=""
 F5_LANG="asante_twi"
 F5_EPOCHS=20
 F5_LIMIT=0
+F5_SOURCES=""
 REQUIREMENTS="requirements.txt"
 MOUNT_DRIVE=0
 STOP_AFTER=1
@@ -105,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --f5-lang)      needval "$@"; F5_LANG="$2"; shift 2 ;;
     --f5-epochs)    needval "$@"; F5_EPOCHS="$2"; shift 2 ;;
     --f5-limit)     needval "$@"; F5_LIMIT="$2"; shift 2 ;;
+    --f5-sources)   needval "$@"; F5_SOURCES="$2"; shift 2 ;;
     --requirements) needval "$@"; REQUIREMENTS="$2"; shift 2 ;;
     --drive)        MOUNT_DRIVE=1; shift ;;
     --no-stop)      STOP_AFTER=0; shift ;;
@@ -131,6 +137,11 @@ fi
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "Refusing unsafe --branch: $BRANCH"
 [[ -z "$F5_NAME" || "$F5_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || die "Invalid --f5 name (letters, digits, _ or -): $F5_NAME"
 case "$F5_LANG" in asante_twi|akuapem_twi|ewe) ;; *) die "Invalid --f5-lang '$F5_LANG'. Use asante_twi, akuapem_twi or ewe." ;; esac
+if [[ -z "$F5_SOURCES" ]]; then
+  [[ "$F5_LANG" == "ewe" ]] && F5_SOURCES="waxal_ewe" || F5_SOURCES="waxal_twi,loud_lounge,twi_multispeaker"
+fi
+[[ "$F5_SOURCES" == "none" ]] && F5_SOURCES=""
+[[ "$F5_SOURCES" =~ ^[a-z0-9_,]*$ ]] || die "Invalid --f5-sources: $F5_SOURCES"
 [[ "$F5_EPOCHS" =~ ^[0-9]+$ && "$F5_LIMIT" =~ ^[0-9]+$ ]] || die "--f5-epochs / --f5-limit must be whole numbers."
 
 REQ_PATH="$REPO_ROOT/$REQUIREMENTS"
@@ -187,13 +198,14 @@ fi
 # ---- 6. run training -------------------------------------------------------
 if [[ -n "$F5_NAME" ]]; then
   # All values below were whitelisted above.
-  log "Training F5-TTS voice '$F5_NAME' on BibleTTS $F5_LANG (this can take hours)..."
+  log "Training F5-TTS voice '$F5_NAME' on BibleTTS $F5_LANG + [${F5_SOURCES:-no extra sources}] (this can take hours)..."
   colab exec -s "$SESSION" <<PY
 import subprocess, sys
 from utils.data_processing import DatasetDownloader
 DatasetDownloader().download_bibletis(["$F5_LANG"])
 run = lambda *a: subprocess.run([sys.executable, "scripts/train_tts_f5.py", *a], check=True)
-run("prepare", "--input", "data/raw/bibletis/$F5_LANG", "--name", "$F5_NAME", "--limit", "$F5_LIMIT")
+srcs = [a for s in "$F5_SOURCES".split(",") if s for a in ("--source", s)]
+run("prepare", "--input", "data/raw/bibletis/$F5_LANG", *srcs, "--name", "$F5_NAME", "--limit", "$F5_LIMIT")
 run("train", "--name", "$F5_NAME", "--epochs", "$F5_EPOCHS")
 PY
 else
@@ -210,7 +222,7 @@ if [[ -n "$F5_NAME" ]]; then
   VOICE_LOCAL="$REPO_ROOT/models/tts_f5/$F5_NAME"
   log "Downloading the trained voice to models/tts_f5/$F5_NAME ..."
   mkdir -p "$VOICE_LOCAL"
-  for f in model_last.pt vocab.txt ref.wav ref.txt; do
+  for f in model_last.pt vocab.txt ref.wav ref.txt sources.json; do
     colab download -s "$SESSION" "$VOICE_REMOTE/$f" "$VOICE_LOCAL/$f"       || warn "Could not download $f — retrieve manually: colab download -s $SESSION $VOICE_REMOTE/$f $VOICE_LOCAL/$f"
   done
 else

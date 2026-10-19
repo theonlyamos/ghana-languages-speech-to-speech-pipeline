@@ -4,8 +4,10 @@ train_tts_f5.py — fine-tune F5-TTS (v1 Base) into a natural Twi (or Ewe) voice
 
 Two steps:
 
-  prepare  BibleTTS folder -> F5 dataset (raw.arrow, duration.json, vocab.txt)
-           plus a reference clip (ref.wav / ref.txt) used at inference time.
+  prepare  Audio/text folders (e.g. BibleTTS) and/or Hugging Face datasets
+           (WAXAL, Loud Lounge, Twi Multi-Speaker; see HF_SOURCES) -> one F5
+           dataset (raw.arrow, duration.json, vocab.txt), a reference clip
+           (ref.wav / ref.txt) and sources.json listing each source's license.
   train    Fine-tune the pretrained F5TTS_v1_Base checkpoint on that dataset.
 
 The pretrained F5 vocab already contains the open e/o and eng letters used in
@@ -13,7 +15,8 @@ Twi/Ewe. Any other character in your data (e.g. tone-marked vowels) is appended 
 grown to match, so no symbol is silently mapped to "unknown".
 
 Examples:
-  python scripts/train_tts_f5.py prepare --input data/raw/bibletis/asante_twi --name twi
+  python scripts/train_tts_f5.py prepare --name twi --input data/raw/bibletis/asante_twi \
+      --source waxal_twi --source loud_lounge --source twi_multispeaker
   python scripts/train_tts_f5.py train --name twi --epochs 20
   python scripts/infer.py --task speak --text "Maakye, wo ho te sen?" --output twi.wav
 
@@ -23,6 +26,7 @@ import argparse
 import json
 import shutil
 import sys
+import time
 import unicodedata
 from importlib.resources import files
 from pathlib import Path
@@ -57,6 +61,33 @@ def normalize(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).split())
 
 
+# Hugging Face sources, by name. "keep" filters rows before any audio is decoded.
+# Multi-speaker data is fine: F5 is a voice-cloning model, so the output voice
+# comes from the reference clip, while extra speakers teach it Twi rhythm/prosody.
+HF_SOURCES = {
+    # Studio voice actors, phonetically balanced scripts (Google WAXAL, Univ. of Ghana).
+    "waxal_twi": dict(repo="google/WaxalNLP", config="twi_tts", text="text",
+                      splits=("train", "validation", "test"), license="CC-BY-4.0"),
+    "waxal_fante": dict(repo="google/WaxalNLP", config="fat_tts", text="text",
+                        splits=("train", "validation", "test"), license="CC-BY-4.0"),
+    "waxal_ewe": dict(repo="google/WaxalNLP", config="ewe_tts", text="text",
+                      splits=("train", "validation", "test"), license="CC-BY-4.0"),
+    # ~65 h conversational podcast Twi/English. Skip lines with digits: numbers
+    # are written as numerals, not words, so the text wouldn't match the audio.
+    "loud_lounge": dict(repo="ghanaopenai/loud-lounge-twi-tts", config=None, text="text",
+                        splits=("train", "validation"), license="CC-BY-NC-4.0",
+                        keep=lambda r: not r["has_digits"]),
+    # ~90 h of 30 s single-speaker clips with quality scores; keep the clean ones.
+    # Filter on DNSMOS, not UTMOS: UTMOS is English-trained and scores this Twi
+    # data low across the board (median ~2.0), while DNSMOS overall has median ~3.3.
+    "twi_multispeaker": dict(repo="ghanaopenai/twi-multispeaker-tts", config=None,
+                             text="transcription", splits=("train",), license="CC-BY-NC-4.0",
+                             keep=lambda r: r["spk_count"] == 1 and (r["dnsmos_ovr"] or 0) >= 3.0
+                             and (r["speech_ratio"] or 0) >= 0.7),
+}
+FOLDER_LICENSE = "see source (BibleTTS: CC-BY-SA-4.0)"
+
+
 def find_pairs(root: Path):
     """BibleTTS ships one audio file + one .txt per verse; match them by stem."""
     for audio in sorted(p for ext in ("*.flac", "*.wav") for p in root.rglob(ext)):
@@ -65,6 +96,66 @@ def find_pairs(root: Path):
             text = normalize(txt.read_text(encoding="utf-8"))
             if text:
                 yield audio, text
+
+
+def folder_rows(root: Path, args):
+    import soundfile as sf
+
+    for audio, text in find_pairs(root):
+        dur = sf.info(str(audio)).duration
+        if args.min_sec <= dur <= args.max_sec:
+            yield audio.resolve().as_posix(), text, dur
+
+
+def hf_rows(name: str, wav_dir: Path, args):
+    """Stream a Hugging Face dataset, writing kept clips as 24 kHz mono wavs."""
+    import io
+
+    import soundfile as sf
+    import torch
+    import torchaudio
+    from datasets import Audio, load_dataset
+
+    src = HF_SOURCES[name]
+    keep = src.get("keep", lambda r: True)
+    wav_dir.mkdir(parents=True, exist_ok=True)
+    def stream(split, start):
+        # decode=False: read the raw bytes with soundfile, no torchcodec/FFmpeg needed.
+        ds = load_dataset(src["repo"], src["config"], split=split, streaming=True)
+        ds = ds.cast_column("audio", Audio(decode=False))
+        return enumerate(ds.skip(start) if start else ds, start)
+
+    def rows_with_retry(split, retries=5):
+        # Long streams over the network do drop; resume from the next unread row.
+        nxt, tries = 0, 0
+        while True:
+            try:
+                for i, r in stream(split, nxt):
+                    nxt = i + 1
+                    yield i, r
+                return
+            except (ConnectionError, OSError) as e:
+                tries += 1
+                if tries > retries:
+                    raise
+                print(f"  {name}/{split}: stream dropped ({e}); retry {tries}/{retries} from row {nxt}")
+                time.sleep(2 ** tries)
+
+    for split in src["splits"]:
+        for i, r in rows_with_retry(split):
+            text = normalize(r[src["text"]] or "")
+            if not text or not keep(r) or not r["audio"].get("bytes"):
+                continue
+            data, sr = sf.read(io.BytesIO(r["audio"]["bytes"]), dtype="float32", always_2d=True)
+            dur = len(data) / sr
+            if not args.min_sec <= dur <= args.max_sec:
+                continue
+            wav = torch.from_numpy(data.mean(axis=1))
+            if sr != MEL["target_sample_rate"]:  # F5 trains at 24 kHz; also halves disk vs 48 kHz
+                wav = torchaudio.functional.resample(wav, sr, MEL["target_sample_rate"])
+            path = wav_dir / f"{name}_{split}_{i:07d}.wav"
+            sf.write(path, wav.numpy(), MEL["target_sample_rate"])
+            yield path.resolve().as_posix(), text, dur
 
 
 def missing_symbols(texts, vocab) -> list:
@@ -79,16 +170,31 @@ def cmd_prepare(args):
     out_dir = Path(args.out or config.dataset.tts_data_dir / f"f5_{args.name}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = []
-    for audio, text in find_pairs(Path(args.input)):
-        dur = sf.info(str(audio)).duration
-        # F5 trains best on 1–25 s clips; longer ones blow up memory.
-        if args.min_sec <= dur <= args.max_sec:
-            rows.append((audio.resolve().as_posix(), text, dur))
-        if args.limit and len(rows) >= args.limit:
-            break
+    sources = [("folder:" + str(p), lambda p=p: folder_rows(Path(p), args), FOLDER_LICENSE)
+               for p in args.input]
+    for name in args.source:
+        lic = HF_SOURCES[name]["license"]
+        if args.commercial_only and "NC" in lic:
+            print(f"Skipping {name} ({lic}) because of --commercial-only")
+            continue
+        sources.append((name, lambda n=name: hf_rows(n, out_dir / "wavs", args), lic))
+    if not sources:
+        sys.exit("error: give at least one --input folder or --source dataset.")
+
+    rows, summary = [], []
+    for name, rows_fn, lic in sources:
+        print(f"Reading {name} ...")
+        got = []
+        for row in rows_fn():
+            got.append(row)
+            if args.limit and len(got) >= args.limit:  # per source
+                break
+        rows += got
+        summary.append(dict(source=name, license=lic, clips=len(got),
+                            hours=round(sum(d for *_, d in got) / 3600, 2)))
+        print(f"  {len(got)} clips, {summary[-1]['hours']} h")
     if not rows:
-        sys.exit(f"error: no audio/.txt pairs between {args.min_sec}-{args.max_sec}s under {args.input}")
+        sys.exit(f"error: no usable clips between {args.min_sec}-{args.max_sec}s in any source.")
 
     csv_path = out_dir / "metadata.csv"
     with open(csv_path, "w", encoding="utf-8") as f:
@@ -108,8 +214,14 @@ def cmd_prepare(args):
         f.write("".join(s + "\n" for s in vocab + extra))
     print(f"New symbols added to vocab: {extra or 'none'}")
 
-    # Reference clip for inference: the clip closest to 8 s (F5 likes 5–10 s prompts).
-    ref_audio, ref_text, _ = min(rows, key=lambda r: abs(r[2] - 8))
+    # Record what the voice was trained on: the strictest license applies to the model.
+    (out_dir / "sources.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    # Reference clip (sets the output voice): from the FIRST source that produced
+    # clips, closest to 8 s, so list your cleanest single-speaker source first.
+    # (Empty sources add no rows, so that source's clips start at rows[0].)
+    first_n = next(s["clips"] for s in summary if s["clips"])
+    ref_audio, ref_text, _ = min(rows[:first_n], key=lambda r: abs(r[2] - 8))
     data, sr = sf.read(ref_audio)
     sf.write(out_dir / "ref.wav", data, sr)
     (out_dir / "ref.txt").write_text(ref_text, encoding="utf-8")
@@ -153,7 +265,7 @@ def cmd_train(args):
             shutil.copy2(src, dst)
 
     # Ship what inference needs next to the checkpoints.
-    for name in ("vocab.txt", "ref.wav", "ref.txt"):
+    for name in ("vocab.txt", "ref.wav", "ref.txt", "sources.json"):
         if (data_dir / name).exists():
             shutil.copy2(data_dir / name, ckpt_dir / name)
 
@@ -190,12 +302,18 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pp = sub.add_parser("prepare", help="BibleTTS folder -> F5 dataset")
-    pp.add_argument("--input", required=True, help="Extracted BibleTTS language folder")
+    pp.add_argument("--input", action="append", default=[],
+                    help="Folder of audio + same-name .txt files, e.g. extracted BibleTTS (repeatable)")
+    pp.add_argument("--source", action="append", default=[], choices=sorted(HF_SOURCES),
+                    help="Hugging Face dataset to stream in (repeatable)")
+    pp.add_argument("--commercial-only", action="store_true",
+                    help="Drop non-commercial (NC) sources")
     pp.add_argument("--name", default="twi", help="Dataset/voice name (default: twi)")
     pp.add_argument("--out", help="Output dir (default: data/processed/tts/f5_<name>)")
     pp.add_argument("--min-sec", type=float, default=1.0)
-    pp.add_argument("--max-sec", type=float, default=25.0)
-    pp.add_argument("--limit", type=int, default=0, help="Max clips (0 = all); use ~500 for a smoke run")
+    pp.add_argument("--max-sec", type=float, default=30.0)
+    pp.add_argument("--limit", type=int, default=0,
+                    help="Max clips per source (0 = all); use ~200 for a smoke run")
 
     tp = sub.add_parser("train", help="Fine-tune F5TTS_v1_Base")
     tp.add_argument("--name", default="twi")
