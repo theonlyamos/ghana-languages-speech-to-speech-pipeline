@@ -88,7 +88,8 @@ def resolve_model_paths(
     Detection mirrors how ``GhanaS2SPipeline`` loads each model:
       - ASR: a Hugging Face dir containing ``config.json`` (merged weights) or
         ``adapter_config.json`` (a LoRA/PEFT adapter).
-      - TTS: a Coqui dir containing ``best_model.pth``.
+      - TTS: an F5-TTS voice dir (``vocab.txt`` + ``model_*.pt``, written by
+        ``scripts/train_tts_f5.py``), preferred; else a Coqui dir with ``best_model.pth``.
 
     Args:
         asr_model_path: Explicit ASR checkpoint dir, or None to auto-resolve.
@@ -116,6 +117,12 @@ def resolve_model_paths(
                 break
 
     if tts is None:
+        # Prefer a trained F5-TTS voice (models/tts_f5/<name>), newest first.
+        f5 = [d for d in Path(config.tts.f5_output_dir).glob("*") if _is_f5_dir(d)]
+        if f5:
+            tts = str(max(f5, key=lambda p: p.stat().st_mtime))
+
+    if tts is None:
         # Coqui writes best_model.pth into a timestamped run subdir under output_dir;
         # also accept it at the root. Pick the most recently modified match.
         base = Path(config.tts.output_dir)
@@ -125,6 +132,12 @@ def resolve_model_paths(
             tts = str(max(candidates, key=lambda p: p.stat().st_mtime))
 
     return asr, tts
+
+
+def _is_f5_dir(path) -> bool:
+    """An F5-TTS voice dir from scripts/train_tts_f5.py: vocab.txt + a model_*.pt."""
+    path = Path(path)
+    return (path / "vocab.txt").exists() and any(path.glob("model_*.pt"))
 
 
 # ============================================================================
@@ -305,7 +318,23 @@ class GhanaS2SPipeline:
         print(f"  Loaded: {model_id}")
     
     def _load_tts(self):
-        """Load TTS (XTTS) model."""
+        """Load TTS: a trained F5-TTS voice if given, else XTTS."""
+        self.f5_ref = None
+        if self.tts_model_path and _is_f5_dir(self.tts_model_path):
+            from f5_tts.api import F5TTS
+            voice = Path(self.tts_model_path)
+            ckpt = voice / "model_last.pt"
+            if not ckpt.exists():
+                ckpt = max(voice.glob("model_*.pt"), key=lambda p: p.stat().st_mtime)
+            print("Loading TTS Model (The Mouth): F5-TTS...")
+            self.tts = F5TTS(model="F5TTS_v1_Base", ckpt_file=str(ckpt),
+                             vocab_file=str(voice / "vocab.txt"), device=self.device)
+            if (voice / "ref.wav").exists():
+                ref_txt = voice / "ref.txt"
+                self.f5_ref = (str(voice / "ref.wav"),
+                               ref_txt.read_text(encoding="utf-8") if ref_txt.exists() else "")
+            print(f"  Loaded F5-TTS voice: {ckpt}")
+            return
         try:
             from TTS.api import TTS
             
@@ -668,9 +697,18 @@ class GhanaS2SPipeline:
             os.close(fd)  # Close the file descriptor, let the TTS library write to it
         
         output_path = str(output_path)
-        
+
+        # F5-TTS always clones a reference clip: the caller's, else the voice's own.
+        if type(self.tts).__name__ == "F5TTS":
+            if speaker_wav:
+                ref_file, ref_text = str(speaker_wav), ""  # "" -> F5 transcribes it itself
+            elif self.f5_ref:
+                ref_file, ref_text = self.f5_ref
+            else:
+                raise RuntimeError("F5-TTS needs a reference clip: pass speaker_wav or add ref.wav to the voice dir.")
+            self.tts.infer(ref_file=ref_file, ref_text=ref_text, gen_text=text, file_wave=output_path)
         # Synthesize
-        if speaker_wav:
+        elif speaker_wav:
             # Voice cloning mode
             self.tts.tts_to_file(
                 text=text,

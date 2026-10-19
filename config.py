@@ -191,6 +191,10 @@ class TTSConfig:
     # Output
     output_dir: Path = field(default_factory=lambda: MODEL_DIR / "tts")
 
+    # F5-TTS (scripts/train_tts_f5.py): one voice per subdir, e.g. models/tts_f5/twi.
+    # Preferred over XTTS at inference when a trained voice exists.
+    f5_output_dir: Path = field(default_factory=lambda: MODEL_DIR / "tts_f5")
+
 
 @dataclass
 class TranslationConfig:

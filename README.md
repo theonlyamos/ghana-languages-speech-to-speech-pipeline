@@ -165,6 +165,29 @@ python -m utils.serving --mode gradio    # or: --mode fastapi
 # add --asr-model-path / --tts-model-path / --base to choose which weights to serve
 ```
 
+## Natural Twi Voice (F5-TTS)
+
+[F5-TTS](https://github.com/SWivid/F5-TTS) gives a far more natural voice than XTTS
+and is simpler to fine-tune. Its pretrained alphabet already includes ɛ, ɔ and ŋ;
+any other symbol in your data is added automatically.
+
+```bash
+# 1. BibleTTS Asante Twi (download in notebook Part 1.3) -> F5 dataset + reference clip
+python scripts/train_tts_f5.py prepare --input data/raw/bibletis/asante_twi --name twi
+#    add --limit 500 for a quick smoke run first
+
+# 2. Fine-tune F5TTS_v1_Base (24 GB GPU; lower --batch-frames if you run out of memory)
+python scripts/train_tts_f5.py train --name twi --epochs 20
+
+# 3. Speak (the pipeline, web UI and API pick up models/tts_f5/<name> automatically)
+python scripts/infer.py --task speak --text "Maakye, wo ho te sɛn?" --output twi.wav
+```
+
+Each voice lives in `models/tts_f5/<name>/` with its checkpoints, `vocab.txt` and a
+`ref.wav`/`ref.txt` reference clip that sets the speaking style. Pass `--speaker-ref
+other.wav` to clone a different voice. Training resumes from `model_last.pt` if
+interrupted. Note: the pretrained F5 weights are CC-BY-NC (non-commercial).
+
 ## Training on Google Colab (CLI)
 
 Don't have a 24GB GPU locally? Train on a remote Colab GPU straight from your
@@ -200,6 +223,7 @@ ghana_sts_model/
 ├── COLAB_CLI.md               # Train on Google Colab GPUs via the CLI
 ├── scripts/
 │   ├── colab_train.sh        # One-command Colab CLI training workflow
+│   ├── train_tts_f5.py       # Prepare + fine-tune a natural F5-TTS voice
 │   └── infer.py              # One-shot CLI inference (trained or base models)
 ├── utils/
 │   ├── __init__.py

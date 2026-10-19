@@ -11,6 +11,7 @@ Tasks:
   detect      Identify the spoken language only (MMS-LID).
   transcribe  Speech -> text (ASR), optionally auto-detecting the language.
   translate   Text -> text (no audio); requires --text.
+  speak       Text -> speech (TTS only); requires --text.
   s2s         Full pipeline: transcribe -> translate -> synthesize (default).
 
 Examples:
@@ -25,6 +26,9 @@ Examples:
 
   # Translate text only (no audio)
   python scripts/infer.py --task translate --text "Maakye" --source aka --target eng
+
+  # Speak text with the trained voice (F5-TTS voice in models/tts_f5 if present)
+  python scripts/infer.py --task speak --text "Maakye, wo ho te sen?" --output twi.wav
 
   # Transcribe + translate but skip speech synthesis
   python scripts/infer.py audio.wav --target eng --no-speak
@@ -52,13 +56,13 @@ def parse_args():
     )
     p.add_argument("input", nargs="?",
                    help="Input audio file (required for detect/transcribe/s2s).")
-    p.add_argument("--task", choices=["detect", "transcribe", "translate", "s2s"],
+    p.add_argument("--task", choices=["detect", "transcribe", "translate", "speak", "s2s"],
                    default="s2s", help="Inference task (default: s2s).")
     p.add_argument("-s", "--source", default="auto",
                    help="Source language code, or 'auto' to detect (default: auto).")
     p.add_argument("-t", "--target", default="eng",
                    help="Target language code (default: eng).")
-    p.add_argument("--text", help="Input text for --task translate (instead of audio).")
+    p.add_argument("--text", help="Input text for --task translate / speak (instead of audio).")
     p.add_argument("-o", "--output", help="Output path for synthesized audio (s2s).")
     p.add_argument("--speaker-ref",
                    help="Reference .wav for voice cloning (s2s synthesis).")
@@ -85,8 +89,8 @@ def main():
             sys.exit(f"error: --task {args.task} requires an input audio file.")
         if not Path(args.input).is_file():
             sys.exit(f"error: audio file not found: {args.input}")
-    if args.task == "translate" and not args.text:
-        sys.exit("error: --task translate requires --text.")
+    if args.task in ("translate", "speak") and not args.text:
+        sys.exit(f"error: --task {args.task} requires --text.")
 
     # Resolve which weights to use (trained checkpoints vs base models).
     from utils.pipeline import GhanaS2SPipeline, resolve_model_paths
@@ -107,6 +111,8 @@ def main():
         load.update(load_asr=True, load_lid=source_is_auto)
     elif args.task == "translate":
         load["load_translation"] = True
+    elif args.task == "speak":
+        load["load_tts"] = True
     elif args.task == "s2s":
         load.update(load_asr=True, load_translation=True,
                     load_tts=not args.no_speak, load_lid=source_is_auto)
@@ -140,6 +146,10 @@ def main():
         tt = pipeline.think(args.text, source_lang=src, target_lang=args.target)
         result.update(source_lang=tt.source_lang, target_lang=tt.target_lang,
                       source_text=tt.source_text, translated_text=tt.translated_text)
+
+    elif args.task == "speak":
+        sp = pipeline.speak(args.text, output_path=args.output, speaker_wav=args.speaker_ref)
+        result.update(text=sp.text, audio_path=sp.audio_path, duration=round(sp.duration, 2))
 
     elif args.task == "s2s":
         if args.no_speak:
