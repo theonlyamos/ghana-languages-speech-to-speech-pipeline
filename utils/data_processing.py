@@ -61,7 +61,7 @@ class DatasetDownloader:
         self, 
         url: str, 
         filename: Optional[str] = None,
-        chunk_size: int = 8192,
+        chunk_size: int = 1 << 20,
         show_progress: bool = True
     ) -> Path:
         """
@@ -123,7 +123,8 @@ class DatasetDownloader:
                     initial=resume_byte_pos,
                     unit="B",
                     unit_scale=True,
-                    desc=filename[:30]
+                    desc=filename[:30],
+                    mininterval=5,  # fewer redraws: frequent ones freeze Colab/Jupyter tabs
                 )
             
             for chunk in response.iter_content(chunk_size=chunk_size):
