@@ -76,7 +76,8 @@ class DatasetConfig:
     })
     
     # BibleTTS URLs (OpenSLR)
-    bibletis_base_url: str = "https://www.openslr.org/resources/129"
+    # EU mirror: ~5x faster than www.openslr.org from Colab (7.7 vs 1.5 MB/s, measured 2026-10)
+    bibletis_base_url: str = "https://openslr.elda.org/resources/129"
     bibletis_files: Dict[str, str] = field(default_factory=lambda: {
         "asante_twi": "asante-twi.tgz",
         "akuapem_twi": "akuapem-twi.tgz",
