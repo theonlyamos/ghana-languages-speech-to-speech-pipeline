@@ -281,7 +281,8 @@ class DatasetDownloader:
             
             archive_path = self.download_file(url, filename)
             extract_dir = self.output_dir / "bibletis" / lang_lower
-            self.extract_archive(archive_path, extract_dir)
+            # The archive (~15 GB for Twi) isn't needed once extracted; Colab disks are tight.
+            self.extract_archive(archive_path, extract_dir, remove_archive=True)
             
             results[lang_lower] = extract_dir
             

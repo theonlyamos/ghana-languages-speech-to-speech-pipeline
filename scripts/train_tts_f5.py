@@ -108,7 +108,7 @@ def folder_rows(root: Path, args):
 
 
 def hf_rows(name: str, wav_dir: Path, args):
-    """Stream a Hugging Face dataset, writing kept clips as 24 kHz mono wavs."""
+    """Stream a Hugging Face dataset, writing kept clips as 24 kHz mono FLAC files."""
     import io
 
     import soundfile as sf
@@ -153,7 +153,8 @@ def hf_rows(name: str, wav_dir: Path, args):
             wav = torch.from_numpy(data.mean(axis=1))
             if sr != MEL["target_sample_rate"]:  # F5 trains at 24 kHz; also halves disk vs 48 kHz
                 wav = torchaudio.functional.resample(wav, sr, MEL["target_sample_rate"])
-            path = wav_dir / f"{name}_{split}_{i:07d}.wav"
+            # FLAC: lossless and about half the size of WAV (~20 GB saved on the full Twi set).
+            path = wav_dir / f"{name}_{split}_{i:07d}.flac"
             sf.write(path, wav.numpy(), MEL["target_sample_rate"])
             yield path.resolve().as_posix(), text, dur
 
