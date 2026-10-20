@@ -280,7 +280,7 @@ def cmd_train(args):
         num_warmup_updates=args.warmup,
         save_per_updates=args.save_every,
         last_per_updates=args.save_every // 4 or 1,
-        keep_last_n_checkpoints=2,
+        keep_last_n_checkpoints=args.keep_checkpoints,
         checkpoint_path=str(ckpt_dir),
         batch_size_per_gpu=args.batch_frames,
         batch_size_type="frame",
@@ -326,6 +326,8 @@ def main():
                     help="Mel frames per GPU batch (~4000 fits 24 GB; lower if OOM)")
     tp.add_argument("--grad-accum", type=int, default=2)
     tp.add_argument("--save-every", type=int, default=2000, help="Save a numbered checkpoint every N updates")
+    tp.add_argument("--keep-checkpoints", type=int, default=2,
+                    help="Numbered checkpoints to keep besides model_last.pt (0 = none; each ~5 GB)")
     tp.add_argument("--workers", type=int, default=4)
     tp.add_argument("--logger", choices=["wandb", "tensorboard"], default=None)
 
