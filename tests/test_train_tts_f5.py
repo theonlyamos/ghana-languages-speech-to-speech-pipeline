@@ -12,6 +12,9 @@ def test_vocab_growth():
     assert T.normalize("  Mè  yí ") == "Mè yí"
     vocab = [" ", "a", "ɛ"]
     assert T.missing_symbols(["aɛƐ", "a ŋ"], vocab) == ["ŋ", "Ɛ"]
+    # Greek/reversed look-alikes become the real Twi letters; non-Latin script is rejected.
+    assert T.normalize("wo ho tε sͻn ‘yoo’") == "wo ho tɛ sɔn 'yoo'"
+    assert T.is_latin_text("Ɛyɛ, wo ho te sɛn? 123") and not T.is_latin_text("ɛyɛ इ")
 
 
 def test_expand_embeddings_keeps_old_rows():

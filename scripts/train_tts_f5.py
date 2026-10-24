@@ -56,9 +56,24 @@ def read_vocab(path: Path) -> list:
         return [line[:-1] for line in f]
 
 
+# Look-alikes typed in place of the Twi/Ewe letters (seen in the HF transcripts), and
+# curly quotes; mapped so each sound has one symbol, matching what users will type.
+LOOKALIKES = str.maketrans({
+    "ε": "ɛ", "Ε": "Ɛ", "ϵ": "ɛ",          # Greek epsilon -> open e
+    "ͻ": "ɔ", "ↄ": "ɔ", "Ↄ": "Ɔ", "ᴐ": "ɔ",  # reversed c / small-cap o -> open o
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+})
+
+
 def normalize(text: str) -> str:
     # NFC so "e" + combining accent and the precomposed letter are the same symbol.
-    return " ".join(unicodedata.normalize("NFC", text).split())
+    return " ".join(unicodedata.normalize("NFC", text).translate(LOOKALIKES).split())
+
+
+def is_latin_text(text: str) -> bool:
+    """False if any letter is from a non-Latin script (e.g. stray Devanagari in a
+    transcript): such lines are mis-transcribed and only teach the model noise."""
+    return all(not c.isalpha() or "LATIN" in unicodedata.name(c, "") for c in text)
 
 
 # Hugging Face sources, by name. "keep" filters rows before any audio is decoded.
@@ -94,7 +109,7 @@ def find_pairs(root: Path):
         txt = audio.with_suffix(".txt")
         if txt.exists():
             text = normalize(txt.read_text(encoding="utf-8"))
-            if text:
+            if text and is_latin_text(text):
                 yield audio, text
 
 
@@ -144,7 +159,7 @@ def hf_rows(name: str, wav_dir: Path, args):
     for split in src["splits"]:
         for i, r in rows_with_retry(split):
             text = normalize(r[src["text"]] or "")
-            if not text or not keep(r) or not r["audio"].get("bytes"):
+            if not text or not is_latin_text(text) or not keep(r) or not r["audio"].get("bytes"):
                 continue
             data, sr = sf.read(io.BytesIO(r["audio"]["bytes"]), dtype="float32", always_2d=True)
             dur = len(data) / sr
