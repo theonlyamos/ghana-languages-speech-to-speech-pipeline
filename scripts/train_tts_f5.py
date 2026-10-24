@@ -229,9 +229,16 @@ def cmd_prepare(args):
     # and we write our own below anyway.
     save_prepped_dataset(out_dir, result, durations, set(), is_finetune=False)
 
-    # Overwrite the dataset-only vocab with pretrained vocab + anything new.
-    vocab = read_vocab(pretrained_vocab_path())
+    # Overwrite the dataset-only vocab with pretrained vocab + anything new. If this voice
+    # already has training checkpoints, reuse ITS vocab so they still load when training
+    # resumes (the text embedding size must match).
+    voice = MODEL_DIR_F5 / args.name
+    resuming = (voice / "vocab.txt").exists() and any(voice.glob("model_*.pt"))
+    vocab = read_vocab(voice / "vocab.txt" if resuming else pretrained_vocab_path())
     extra = missing_symbols([t for _, t, _ in rows], vocab)
+    if resuming and extra:
+        print(f"Keeping {voice}/vocab.txt for resume; unseen symbols {extra} map to 'unknown'.")
+        extra = []
     with open(out_dir / "vocab.txt", "w", encoding="utf-8") as f:
         f.write("".join(s + "\n" for s in vocab + extra))
     print(f"New symbols added to vocab: {extra or 'none'}")
