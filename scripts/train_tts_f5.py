@@ -320,6 +320,16 @@ def cmd_train(args):
         wandb_run_name=args.name,
         accelerate_kwargs={"mixed_precision": "bf16" if bf16 else "no"},
     )
+    # Write checkpoints to a temp file and rename into place, so stopping training mid-save
+    # (a 5 GB write, slow on Drive) can never leave a half-written model_last.pt behind.
+    save = trainer.accelerator.save
+
+    def atomic_save(obj, f, **kw):
+        save(obj, f"{f}.tmp", **kw)
+        os.replace(f"{f}.tmp", f)
+
+    trainer.accelerator.save = atomic_save
+
     durations = json.loads((data_dir / "duration.json").read_text(encoding="utf-8"))["duration"]
     dataset = CustomDataset(Dataset.from_file(str(data_dir / "raw.arrow")), durations=durations, **MEL)
     trainer.train(dataset, num_workers=args.workers, resumable_with_seed=666)
