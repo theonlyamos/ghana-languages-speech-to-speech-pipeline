@@ -24,12 +24,18 @@ Needs: pip install f5-tts   (and a CUDA GPU with ~24 GB for training)
 """
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
 import unicodedata
 from importlib.resources import files
 from pathlib import Path
+
+# F5 never closes an epoch's progress bar, so from epoch 2 on tqdm draws the new one
+# on the line below with a newline per redraw, flooding notebook output. Pin all bars
+# to one line (read by tqdm at import, so set before anything imports it).
+os.environ.setdefault("TQDM_POSITION", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
