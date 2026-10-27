@@ -99,8 +99,6 @@ def main():
         tts_model_path=args.tts_model_path,
         use_base=args.base,
     )
-    print(f"[infer] ASR weights: {asr_path or config.asr.model_id + ' (base)'}", file=sys.stderr)
-    print(f"[infer] TTS weights: {tts_path or config.tts.model_name + ' (base)'}", file=sys.stderr)
 
     # Load only the components this task needs (saves memory and load time).
     source_is_auto = args.source.lower() == "auto"
@@ -116,6 +114,12 @@ def main():
     elif args.task == "s2s":
         load.update(load_asr=True, load_translation=True,
                     load_tts=not args.no_speak, load_lid=source_is_auto)
+
+    # Only mention the models this task actually loads.
+    if load["load_asr"]:
+        print(f"[infer] ASR weights: {asr_path or config.asr.model_id + ' (base)'}", file=sys.stderr)
+    if load["load_tts"]:
+        print(f"[infer] TTS weights: {tts_path or config.tts.model_name + ' (base)'}", file=sys.stderr)
 
     pipeline = GhanaS2SPipeline(
         device=args.device,
