@@ -31,12 +31,14 @@ import pandas as pd
 
 SR = 16_000
 
-# lang -> (dataset id, config, split, transcript column candidates)
+# lang -> (dataset repo, test parquet file). We read one parquet shard directly
+# (about 0.2-0.5 GB each) because streaming with `datasets` breaks on WaxalNLP's
+# Ewe shard (extra index column) and needs torchcodec for audio.
 TEST_SETS = {
-    "aka": ("google/WaxalNLP", "aka_asr", "test"),
-    "ewe": ("google/WaxalNLP", "ewe_asr", "test"),
-    "dag": ("google/WaxalNLP", "dag_asr", "test"),
-    "gaa": ("ghananlpcommunity/ga-multispeaker-speech-text-20k", None, "test"),
+    "aka": ("google/WaxalNLP", "data/ASR/aka/aka-test-00000.parquet"),
+    "ewe": ("google/WaxalNLP", "data/ASR/ewe/ewe-test-00000.parquet"),
+    "dag": ("google/WaxalNLP", "data/ASR/dag/test-00000-of-00003.parquet"),
+    "gaa": ("ghananlpcommunity/ga-multispeaker-speech-text-20k", "data/test-00000-of-00001.parquet"),
 }
 TEXT_COLS = ("transcription", "text", "sentence", "transcript", "corrected_text")
 AUDIO_COLS = ("audio", "audio_path", "path")
@@ -66,88 +68,88 @@ def normalize(text: str) -> str:
 
 # --------------------------------------------------------------------------- data
 def load_test_clips(lang: str, n: int, seed: int = 0):
-    """Stream n (audio_16k, reference) pairs for a language."""
-    from datasets import Audio, load_dataset
+    """Pick n random (audio_16k, reference) pairs from a language's test shard."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download
 
-    repo, cfg, split = TEST_SETS[lang]
-    ds = load_dataset(repo, cfg, split=split, streaming=True)
-    ds = ds.shuffle(seed=seed, buffer_size=2000)
-    cols = list(ds.features.keys()) if ds.features else []
+    repo, fname = TEST_SETS[lang]
+    path = hf_hub_download(repo, fname, repo_type="dataset")
+    table = pq.read_table(path)
+    cols = table.column_names
     text_col = next((c for c in TEXT_COLS if c in cols), None)
     audio_col = next((c for c in AUDIO_COLS if c in cols), None)
     if text_col is None or audio_col is None:
-        raise SystemExit(f"{repo}/{cfg}: can't find text/audio columns in {cols}")
-    ds = ds.cast_column(audio_col, Audio(sampling_rate=SR))
+        raise SystemExit(f"{repo}/{fname}: can't find text/audio columns in {cols}")
 
+    order = np.random.default_rng(seed).permutation(table.num_rows)
     clips = []
-    for ex in ds:
-        ref = ex[text_col]
-        audio = ex[audio_col]
+    for idx in order:
+        row = table.slice(int(idx), 1).select([text_col, audio_col]).to_pylist()[0]
+        ref, audio = row[text_col], row[audio_col]
         if not ref or not str(ref).strip() or audio is None:
             continue
-        wav = np.asarray(audio["array"], dtype=np.float32)
+        try:
+            wav = _decode_audio(audio)
+        except Exception as e:
+            print(f"[data] {lang}: skipping undecodable clip ({e})")
+            continue
         dur = len(wav) / SR
         if dur < 0.5 or dur > 30:
             continue
-        clips.append({"lang": lang, "source": f"{repo}:{cfg or ''}:{split}",
+        clips.append({"lang": lang, "source": f"{repo}:{fname}",
                       "ref": str(ref), "wav": wav, "dur": dur})
         if len(clips) >= n:
             break
     return clips
 
 
+def _decode_audio(audio) -> np.ndarray:
+    """Turn a datasets Audio(decode=False) value into mono float32 at 16 kHz."""
+    import io
+
+    import soundfile as sf
+    from scipy.signal import resample_poly
+
+    if isinstance(audio, dict) and audio.get("bytes"):
+        wav, sr = sf.read(io.BytesIO(audio["bytes"]), dtype="float32", always_2d=False)
+    elif isinstance(audio, dict) and audio.get("path"):
+        wav, sr = sf.read(audio["path"], dtype="float32", always_2d=False)
+    else:
+        wav, sr = sf.read(audio, dtype="float32", always_2d=False)
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    if sr != SR:
+        from math import gcd
+        g = gcd(sr, SR)
+        wav = resample_poly(wav, SR // g, sr // g)
+    return np.asarray(wav, dtype=np.float32)
+
+
 # --------------------------------------------------------------------------- models
 class Griot:
+    """Wraps the model repo's own inference.py (load_model + greedy transcribe)."""
+
     name = "griot-nano-1"
 
     def __init__(self, model_dir: str | None, device: str):
+        import torch
         from huggingface_hub import snapshot_download
 
         self.dir = Path(model_dir or snapshot_download("Qlerqly/griot-nano-1"))
         sys.path.insert(0, str(self.dir / "src"))
         sys.path.insert(0, str(self.dir))
-        # Reuse the repo's own inference helpers so preprocessing matches training.
         self.inf = importlib.import_module("inference")
-        self.device = device
-        self.model, self.cfg, self.id2tok = self._load()
+        self.device = torch.device(device)
+        # fp32 on CPU; bf16 on CUDA when supported (same rule as the repo's CLI).
+        dtype = self.inf.resolve_dtype("auto", self.device)
+        self.model, self.vocab, self.id2tok = self.inf.load_model(self.dir, self.device, dtype)
 
-    def _load(self):
-        import torch
-        from safetensors.torch import load_file
-        from conformer_ctc.model import ConformerCTC, ConformerCTCConfig
-
-        cfg_raw = json.loads((self.dir / "config.json").read_text())
-        model_cfg = cfg_raw.get("model", cfg_raw)
-        cfg = (ConformerCTCConfig.from_dict(model_cfg) if hasattr(ConformerCTCConfig, "from_dict")
-               else ConformerCTCConfig(**{k: v for k, v in model_cfg.items()
-                                          if k in ConformerCTCConfig.__dataclass_fields__}))
-        model = ConformerCTC(cfg)
-        model.load_state_dict(load_file(str(self.dir / "model.safetensors")))
-        model.to(self.device).eval()
-        vocab = json.loads((self.dir / "vocab.json").read_text())
-        id2tok = {int(v): k for k, v in vocab.items()}
-        return model, cfg, id2tok
+    def supports(self, lang: str) -> bool:
+        return True
 
     def transcribe(self, wav: np.ndarray, lang: str) -> str:
-        import torch
-        from conformer_ctc.data import FeatureConfig, audio_to_log_mel
-
-        feats = audio_to_log_mel(torch.from_numpy(wav), FeatureConfig(sample_rate=SR, n_mels=self.cfg.n_mels))
-        if feats.dim() == 2:
-            feats = feats.unsqueeze(0)
-        lengths = torch.tensor([feats.shape[1]])
-        with torch.inference_mode():
-            logits, out_lens = self.model(feats.to(self.device), lengths.to(self.device))
-        ids = logits[0, : int(out_lens[0])].argmax(-1).tolist()
-        blank = getattr(self.cfg, "blank_id", 0)
-        pad = getattr(self.cfg, "pad_id", None)
-        out, prev = [], None
-        for i in ids:
-            if i != prev and i != blank and i != pad:
-                out.append(self.id2tok.get(i, ""))
-            prev = i
-        text = "".join(out).replace("|", " ").replace("▁", " ")
-        return re.sub(r"\s+", " ", text).strip()
+        audio = self.inf.prepare_audio(wav, SR)
+        return self.inf.transcribe(self.model, self.id2tok, audio, self.device)
 
 
 class MMS:
@@ -163,6 +165,11 @@ class MMS:
         self.lang = None
         if lora_dir:
             self.name = f"mms-1b+lora({Path(lora_dir).name})"
+
+    def supports(self, lang: str) -> bool:
+        # Stock mms-1b-all has no adapter for some Ghanaian languages (e.g. dag, gaa);
+        # a LoRA fine-tune may still cover them.
+        return bool(self.lora_dir) or lang in self.processor.tokenizer.vocab
 
     def _set_lang(self, lang: str):
         if lang != self.lang:
@@ -213,7 +220,12 @@ def main():
     for key in args.models:
         model = Griot(args.griot_dir, args.device) if key == "griot" else MMS(args.mms_lora, args.device)
         print(f"[model] {model.name} on {args.device}")
+        skipped = sorted({c["lang"] for c in clips if not model.supports(c["lang"])})
+        if skipped:
+            print(f"  {model.name} has no adapter for {skipped}; skipping those clips")
         for i, c in enumerate(clips):
+            if c["lang"] in skipped:
+                continue
             t = time.time()
             try:
                 hyp = model.transcribe(c["wav"], c["lang"])
