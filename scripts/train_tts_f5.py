@@ -185,12 +185,92 @@ def missing_symbols(texts, vocab) -> list:
     return sorted({c for t in texts for c in t} - have)
 
 
+# ---------------------------------------------------------------------------
+# Drive backup. Checkpoints are written to the VM's local disk (fast, and Drive
+# never sees the old copies). Every --backup-every minutes model_last.pt is copied
+# to --backup-dir, alternating between two files that are overwritten IN PLACE:
+# replacing or deleting files on Drive sends the old 5 GB copy to the trash, where
+# it keeps using quota. Two slots mean one is always complete, even mid-copy.
+# ---------------------------------------------------------------------------
+BACKUP_SLOTS = ("model_backup_a.pt", "model_backup_b.pt")
+SMALL_FILES = ("vocab.txt", "ref.wav", "ref.txt", "sources.json")
+
+
+def is_complete_ckpt(path: Path) -> bool:
+    import zipfile
+
+    try:
+        return zipfile.is_zipfile(path) and any(n.endswith("data.pkl") for n in zipfile.ZipFile(path).namelist())
+    except OSError:
+        return False
+
+
+def restore_from_backup(voice: Path, backup: Path):
+    """On a fresh VM, bring the voice's small files and newest good checkpoint back."""
+    if not backup or not backup.exists():
+        return
+    voice.mkdir(parents=True, exist_ok=True)
+    for name in SMALL_FILES:
+        if (backup / name).exists() and not (voice / name).exists():
+            shutil.copy2(backup / name, voice / name)
+    if any(voice.glob("model_*.pt")):
+        return  # this VM already has (newer) local progress
+    # model_last.pt: written there directly by older versions of this script.
+    found = [backup / n for n in (*BACKUP_SLOTS, "model_last.pt") if (backup / n).exists()]
+    good = [f for f in sorted(found, key=lambda f: f.stat().st_mtime, reverse=True) if is_complete_ckpt(f)]
+    if good:
+        print(f"Restoring {good[0]} -> {voice / 'model_last.pt'} ...")
+        shutil.copyfile(good[0], voice / "model_last.pt")
+
+
+class DriveBackup:
+    def __init__(self, voice: Path, backup: Path, every_min: float):
+        self.voice, self.backup, self.every = voice, backup, every_min * 60
+        self.last, self.slot, self.thread = time.time(), 0, None
+        backup.mkdir(parents=True, exist_ok=True)
+
+    def maybe(self, force=False):
+        import threading
+
+        if self.thread and self.thread.is_alive():
+            if not force:
+                return
+            self.thread.join()
+        if not force and time.time() - self.last < self.every:
+            return
+        src = self.voice / "model_last.pt"
+        if not src.exists():
+            return
+        # Hard-link snapshot: the next local save replaces model_last.pt with a new
+        # file, so this copy source stays intact while it uploads in the background.
+        snap = self.voice / "model_backup_snapshot.pt"
+        snap.unlink(missing_ok=True)
+        os.link(src, snap)
+        dst = self.backup / BACKUP_SLOTS[self.slot]
+        self.slot, self.last = 1 - self.slot, time.time()
+
+        def copy():
+            shutil.copyfile(snap, dst)  # opens the existing Drive file and overwrites it
+            snap.unlink(missing_ok=True)
+            for name in SMALL_FILES:
+                if (self.voice / name).exists():
+                    shutil.copyfile(self.voice / name, self.backup / name)
+            print(f"Backed up model_last.pt to {dst}")
+
+        self.thread = threading.Thread(target=copy, daemon=True)
+        self.thread.start()
+        if force:
+            self.thread.join()
+
+
 def cmd_prepare(args):
     import soundfile as sf
     from f5_tts.train.datasets.prepare_csv_wavs import prepare_csv_wavs_dir, save_prepped_dataset
 
     out_dir = Path(args.out or config.dataset.tts_data_dir / f"f5_{args.name}")
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Fresh VM resuming a run: restore the voice's vocab first so the vocab check below sees it.
+    restore_from_backup(MODEL_DIR_F5 / args.name, Path(args.backup_dir) if args.backup_dir else None)
 
     sources = [("folder:" + str(p), lambda p=p: folder_rows(Path(p), args), FOLDER_LICENSE)
                for p in args.input]
@@ -280,6 +360,8 @@ def cmd_train(args):
     if not (data_dir / "raw.arrow").exists():
         sys.exit(f"error: {data_dir} has no raw.arrow — run `prepare` first.")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    backup = Path(args.backup_dir) if args.backup_dir else None
+    restore_from_backup(ckpt_dir, backup)
 
     vocab = read_vocab(data_dir / "vocab.txt")
     n_new = len(vocab) - len(read_vocab(pretrained_vocab_path()))
@@ -323,16 +405,21 @@ def cmd_train(args):
     # Write checkpoints to a temp file and rename into place, so stopping training mid-save
     # (a 5 GB write, slow on Drive) can never leave a half-written model_last.pt behind.
     save = trainer.accelerator.save
+    drive = DriveBackup(ckpt_dir, backup, args.backup_every) if backup else None
 
     def atomic_save(obj, f, **kw):
         save(obj, f"{f}.tmp", **kw)
         os.replace(f"{f}.tmp", f)
+        if drive and f.endswith("model_last.pt"):
+            drive.maybe()
 
     trainer.accelerator.save = atomic_save
 
     durations = json.loads((data_dir / "duration.json").read_text(encoding="utf-8"))["duration"]
     dataset = CustomDataset(Dataset.from_file(str(data_dir / "raw.arrow")), durations=durations, **MEL)
     trainer.train(dataset, num_workers=args.workers, resumable_with_seed=666)
+    if drive:
+        drive.maybe(force=True)  # the finished model
     print(f"Done. Checkpoints in {ckpt_dir} (inference loads model_last.pt).")
 
 
@@ -351,6 +438,7 @@ def main():
     pp.add_argument("--out", help="Output dir (default: data/processed/tts/f5_<name>)")
     pp.add_argument("--min-sec", type=float, default=1.0)
     pp.add_argument("--max-sec", type=float, default=30.0)
+    pp.add_argument("--backup-dir", help="Drive folder with this voice's backups (restores its vocab on resume)")
     pp.add_argument("--limit", type=int, default=0,
                     help="Max clips per source (0 = all); use ~200 for a smoke run")
 
@@ -367,6 +455,8 @@ def main():
     tp.add_argument("--save-every", type=int, default=2000, help="Save a numbered checkpoint every N updates")
     tp.add_argument("--keep-checkpoints", type=int, default=0,
                     help="Numbered checkpoints to keep besides model_last.pt (0 = none; each ~5 GB)")
+    tp.add_argument("--backup-dir", help="Back up checkpoints here (e.g. a Drive folder); restored on a fresh VM")
+    tp.add_argument("--backup-every", type=float, default=60, help="Minutes between backups (default 60)")
     tp.add_argument("--workers", type=int, default=4)
     tp.add_argument("--logger", choices=["wandb", "tensorboard"], default=None)
 
