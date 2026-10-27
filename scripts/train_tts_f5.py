@@ -187,7 +187,8 @@ def missing_symbols(texts, vocab) -> list:
 
 # ---------------------------------------------------------------------------
 # Drive backup. Checkpoints are written to the VM's local disk (fast, and Drive
-# never sees the old copies). Every --backup-every minutes model_last.pt is copied
+# never sees the old copies). Every --backup-every minutes, and at the start of each
+# epoch, model_last.pt is copied
 # to --backup-dir, alternating between two files that are overwritten IN PLACE:
 # replacing or deleting files on Drive sends the old 5 GB copy to the trash, where
 # it keeps using quota. Two slots mean one is always complete, even mid-copy.
@@ -229,14 +230,15 @@ class DriveBackup:
         self.last, self.slot, self.thread = time.time(), 0, None
         backup.mkdir(parents=True, exist_ok=True)
 
-    def maybe(self, force=False):
+    def maybe(self, now=False, block=False):
+        """Back up if the interval has passed, or right away with now=True."""
         import threading
 
         if self.thread and self.thread.is_alive():
-            if not force:
+            if not now:
                 return
             self.thread.join()
-        if not force and time.time() - self.last < self.every:
+        if not now and time.time() - self.last < self.every:
             return
         src = self.voice / "model_last.pt"
         if not src.exists():
@@ -259,7 +261,7 @@ class DriveBackup:
 
         self.thread = threading.Thread(target=copy, daemon=True)
         self.thread.start()
-        if force:
+        if block:
             self.thread.join()
 
 
@@ -406,12 +408,28 @@ def cmd_train(args):
     # (a 5 GB write, slow on Drive) can never leave a half-written model_last.pt behind.
     save = trainer.accelerator.save
     drive = DriveBackup(ckpt_dir, backup, args.backup_every) if backup else None
+    new_epoch = [False]
+
+    if drive:
+        # F5 opens a fresh "Epoch N/M" progress bar at the start of each epoch; use that
+        # to back up the first checkpoint of every epoch as well as on the timer.
+        import f5_tts.model.trainer as f5_trainer
+
+        tqdm_cls = f5_trainer.tqdm
+
+        def epoch_aware_tqdm(*a, **kw):
+            if str(kw.get("desc", "")).startswith("Epoch"):
+                new_epoch[0] = True
+            return tqdm_cls(*a, **kw)
+
+        f5_trainer.tqdm = epoch_aware_tqdm
 
     def atomic_save(obj, f, **kw):
         save(obj, f"{f}.tmp", **kw)
         os.replace(f"{f}.tmp", f)
         if drive and f.endswith("model_last.pt"):
-            drive.maybe()
+            drive.maybe(now=new_epoch[0])
+            new_epoch[0] = False
 
     trainer.accelerator.save = atomic_save
 
@@ -419,7 +437,7 @@ def cmd_train(args):
     dataset = CustomDataset(Dataset.from_file(str(data_dir / "raw.arrow")), durations=durations, **MEL)
     trainer.train(dataset, num_workers=args.workers, resumable_with_seed=666)
     if drive:
-        drive.maybe(force=True)  # the finished model
+        drive.maybe(now=True, block=True)  # the finished model
     print(f"Done. Checkpoints in {ckpt_dir} (inference loads model_last.pt).")
 
 
@@ -456,7 +474,8 @@ def main():
     tp.add_argument("--keep-checkpoints", type=int, default=0,
                     help="Numbered checkpoints to keep besides model_last.pt (0 = none; each ~5 GB)")
     tp.add_argument("--backup-dir", help="Back up checkpoints here (e.g. a Drive folder); restored on a fresh VM")
-    tp.add_argument("--backup-every", type=float, default=60, help="Minutes between backups (default 60)")
+    tp.add_argument("--backup-every", type=float, default=30,
+                    help="Minutes between backups (default 30); also backs up at the start of each epoch")
     tp.add_argument("--workers", type=int, default=4)
     tp.add_argument("--logger", choices=["wandb", "tensorboard"], default=None)
 
