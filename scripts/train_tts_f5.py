@@ -433,6 +433,36 @@ def cmd_train(args):
 
     trainer.accelerator.save = atomic_save
 
+    # Continuing a finished run with more --epochs: F5 restores the OLD learning-rate
+    # schedule from the checkpoint, which had already decayed to ~0, so the extra epochs
+    # would learn nothing. When the planned length changed, start a fresh short warm-up
+    # and decay over the remaining updates instead.
+    orig_load = trainer.load_checkpoint
+
+    def total_updates(sched):
+        inner = getattr(sched, "scheduler", sched)  # unwrap accelerate's wrapper
+        return inner._milestones[0] + inner._schedulers[1].total_iters
+
+    def load_with_schedule_check():
+        from torch.optim.lr_scheduler import LinearLR, SequentialLR
+
+        planned = total_updates(trainer.scheduler)
+        start = orig_load()
+        if start and total_updates(trainer.scheduler) != planned and start < planned:
+            remaining = planned - start
+            warm = max(1, min(args.warmup, remaining // 10))
+            opt = trainer.optimizer
+            sched = SequentialLR(opt, [LinearLR(opt, 1e-8, 1.0, total_iters=warm),
+                                       LinearLR(opt, 1.0, 1e-8, total_iters=remaining - warm)],
+                                 milestones=[warm])
+            trainer.scheduler = trainer.accelerator.prepare_scheduler(sched)
+            peak = opt.param_groups[0].get("initial_lr", args.lr)
+            print(f"Extending training: update {start} -> {planned}; new LR schedule "
+                  f"(warm-up {warm}, peak {peak:g}, decay over {remaining - warm} updates).")
+        return start
+
+    trainer.load_checkpoint = load_with_schedule_check
+
     durations = json.loads((data_dir / "duration.json").read_text(encoding="utf-8"))["duration"]
     dataset = CustomDataset(Dataset.from_file(str(data_dir / "raw.arrow")), durations=durations, **MEL)
     trainer.train(dataset, num_workers=args.workers, resumable_with_seed=666)
