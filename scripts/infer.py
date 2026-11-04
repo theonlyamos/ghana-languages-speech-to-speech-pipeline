@@ -70,6 +70,9 @@ def parse_args():
                    help="For --task s2s: skip TTS (transcribe + translate only).")
     p.add_argument("--asr-model-path", help="Override the ASR checkpoint directory.")
     p.add_argument("--tts-model-path", help="Override the TTS checkpoint directory.")
+    p.add_argument("--f5-raw-weights", action="store_true",
+                   help="F5-TTS voice: speak with the latest raw training weights instead of "
+                        "the EMA (smoothed) weights, which lag behind training.")
     p.add_argument("--base", action="store_true",
                    help="Force the base models instead of auto-loading trained checkpoints.")
     p.add_argument("--device", choices=["cuda", "cpu"], default=None,
@@ -91,6 +94,9 @@ def main():
             sys.exit(f"error: audio file not found: {args.input}")
     if args.task in ("translate", "speak") and not args.text:
         sys.exit(f"error: --task {args.task} requires --text.")
+
+    if args.f5_raw_weights:
+        config.tts.f5_use_ema = False
 
     # Resolve which weights to use (trained checkpoints vs base models).
     from utils.pipeline import GhanaS2SPipeline, resolve_model_paths

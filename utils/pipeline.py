@@ -327,13 +327,15 @@ class GhanaS2SPipeline:
             if not ckpt.exists():
                 ckpt = max(voice.glob("model_*.pt"), key=lambda p: p.stat().st_mtime)
             print("Loading TTS Model (The Mouth): F5-TTS...")
+            use_ema = config.tts.f5_use_ema
             self.tts = F5TTS(model="F5TTS_v1_Base", ckpt_file=str(ckpt),
-                             vocab_file=str(voice / "vocab.txt"), device=self.device)
+                             vocab_file=str(voice / "vocab.txt"), device=self.device,
+                             use_ema=use_ema)
             if (voice / "ref.wav").exists():
                 ref_txt = voice / "ref.txt"
                 self.f5_ref = (str(voice / "ref.wav"),
                                ref_txt.read_text(encoding="utf-8") if ref_txt.exists() else "")
-            print(f"  Loaded F5-TTS voice: {ckpt}")
+            print(f"  Loaded F5-TTS voice: {ckpt} ({'EMA' if use_ema else 'raw'} weights)")
             return
         try:
             from TTS.api import TTS

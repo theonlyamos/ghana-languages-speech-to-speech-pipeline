@@ -195,6 +195,9 @@ class TTSConfig:
     # F5-TTS (scripts/train_tts_f5.py): one voice per subdir, e.g. models/tts_f5/twi.
     # Preferred over XTTS at inference when a trained voice exists.
     f5_output_dir: Path = field(default_factory=lambda: MODEL_DIR / "tts_f5")
+    # Speak with the EMA (smoothed) weights in model_last.pt, or the latest raw weights.
+    # The EMA lags the training; see --ema-beta in scripts/train_tts_f5.py.
+    f5_use_ema: bool = True
 
 
 @dataclass
