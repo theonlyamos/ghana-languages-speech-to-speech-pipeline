@@ -403,6 +403,12 @@ def cmd_train(args):
         wandb_project="ghana-f5-tts",
         wandb_run_name=args.name,
         accelerate_kwargs={"mixed_precision": "bf16" if bf16 else "no"},
+        # F5's default EMA (beta 0.9999, updated every 10 updates) averages over the last
+        # ~100k updates, tuned for 1M+ update pre-training. Over a fine-tune of ~10k
+        # updates per epoch it lags many epochs behind: after 20 epochs ~14% of the EMA
+        # weights (what inference uses) were still the original pretrained model.
+        # The EMA's beta isn't saved in checkpoints, so this also applies on resume.
+        ema_kwargs=dict(beta=args.ema_beta),
     )
     # Write checkpoints to a temp file and rename into place, so stopping training mid-save
     # (a 5 GB write, slow on Drive) can never leave a half-written model_last.pt behind.
@@ -506,6 +512,10 @@ def main():
     tp.add_argument("--backup-dir", help="Back up checkpoints here (e.g. a Drive folder); restored on a fresh VM")
     tp.add_argument("--backup-every", type=float, default=30,
                     help="Minutes between backups (default 30); also backs up at the start of each epoch")
+    tp.add_argument("--ema-beta", type=float, default=0.999,
+                    help="EMA decay per EMA update (one every 10 updates); averages over about "
+                         "10/(1-beta) updates. Default 0.999 = ~10k updates (~1 epoch of the "
+                         "190 h Twi set). F5's own default, 0.9999, is ~100k.")
     tp.add_argument("--workers", type=int, default=4)
     tp.add_argument("--logger", choices=["wandb", "tensorboard"], default=None)
 
