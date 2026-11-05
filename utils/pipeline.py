@@ -320,6 +320,11 @@ class GhanaS2SPipeline:
     def _load_tts(self):
         """Load TTS: a trained F5-TTS voice if given, else XTTS."""
         self.f5_ref = None
+        if self.tts_model_path and (Path(self.tts_model_path) / "vocab.txt").exists() \
+                and not _is_f5_dir(self.tts_model_path):
+            raise FileNotFoundError(
+                f"{self.tts_model_path} looks like an F5-TTS voice but has no model_*.pt checkpoint "
+                "(on a fresh Colab VM, restore model_last.pt from the Drive backup first).")
         if self.tts_model_path and _is_f5_dir(self.tts_model_path):
             from f5_tts.api import F5TTS
             voice = Path(self.tts_model_path)
