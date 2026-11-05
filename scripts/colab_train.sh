@@ -34,6 +34,7 @@
 #                       (see HF_SOURCES in scripts/train_tts_f5.py; "none" for
 #                       BibleTTS only). Default for Twi:
 #                       waxal_twi,loud_lounge,twi_multispeaker ; for Ewe: waxal_ewe
+#                       Clearer-voice mix: waxal_twi,jw_twi,loud_lounge_twi
 #   --f5-epochs N       Training epochs for --f5                  (default: 20)
 #   --f5-limit N        Use only N clips for --f5 (quick smoke run; default: all)
 #   --requirements FILE Local requirements file installed on the VM

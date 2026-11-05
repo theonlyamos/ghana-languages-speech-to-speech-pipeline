@@ -25,6 +25,7 @@ Needs: pip install f5-tts   (and a CUDA GPU with ~24 GB for training)
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -82,6 +83,19 @@ def is_latin_text(text: str) -> bool:
     return all(not c.isalpha() or "LATIN" in unicodedata.name(c, "") for c in text)
 
 
+_EN_COMMON = set("the and to you is that it of i in we for so what this my be are was have but "
+                 "on with they like not just do me your know can yeah all".split())
+_BACKCHANNEL = re.compile(r"\b(mhm|yeah|hmm|um|uh)\b", re.I)
+
+
+def mostly_twi(text: str, max_en=0.15) -> bool:
+    """True if under max_en of the words are common English words and no backchannels."""
+    words = [w.strip(".,?!'\"").lower() for w in (text or "").split()]
+    if not words or _BACKCHANNEL.search(text):
+        return False
+    return sum(w in _EN_COMMON for w in words) / len(words) < max_en
+
+
 # Hugging Face sources, by name. "keep" filters rows before any audio is decoded.
 # Multi-speaker data is fine: F5 is a voice-cloning model, so the output voice
 # comes from the reference clip, while extra speakers teach it Twi rhythm/prosody.
@@ -98,7 +112,18 @@ HF_SOURCES = {
     "loud_lounge": dict(repo="ghanaopenai/loud-lounge-twi-tts", config=None, text="text",
                         splits=("train", "validation"), license="CC-BY-NC-4.0",
                         keep=lambda r: not r["has_digits"]),
+    # Stricter Loud Lounge: also skip English-heavy lines and lines with another
+    # speaker's backchannel ("Mhm", "Yeah"), which make the voice mumble and switch accent.
+    "loud_lounge_twi": dict(repo="ghanaopenai/loud-lounge-twi-tts", config=None, text="text",
+                            splits=("train", "validation"), license="CC-BY-NC-4.0",
+                            keep=lambda r: not r["has_digits"] and mostly_twi(r["text"])),
+    # ~172 h of clean dubbed/broadcast Twi (JW.org-style talks and readings), 24 kHz,
+    # ~200 pseudo-speakers. qc_pass drops ASR-failure rows and rare speakers (~147 h left).
+    "jw_twi": dict(repo="ghanaopenai/new-twi-tts-aligned-ipa", config=None, text="text",
+                   splits=("train", "test"), license="CC-BY-NC-4.0",
+                   keep=lambda r: bool(r["qc_pass"])),
     # ~90 h of 30 s single-speaker clips with quality scores; keep the clean ones.
+    # Note: this set is 16 kHz, so it carries nothing above 8 kHz (sounds muffled at 24 kHz).
     # Filter on DNSMOS, not UTMOS: UTMOS is English-trained and scores this Twi
     # data low across the board (median ~2.0), while DNSMOS overall has median ~3.3.
     "twi_multispeaker": dict(repo="ghanaopenai/twi-multispeaker-tts", config=None,

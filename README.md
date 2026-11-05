@@ -189,7 +189,13 @@ python scripts/infer.py --task speak --text "Maakye, wo ho te sɛn?" --output tw
 | `--input` BibleTTS | Studio Bible readings, one speaker | Twi, Ewe | CC-BY-SA-4.0 |
 | `waxal_twi` / `waxal_fante` / `waxal_ewe` | [Google WAXAL](https://huggingface.co/datasets/google/WaxalNLP) studio voice actors | ~1–1.5k clips each | CC-BY-4.0 |
 | `loud_lounge` | [Conversational podcast Twi](https://huggingface.co/datasets/ghanaopenai/loud-lounge-twi-tts) (lines with numerals skipped) | up to ~65 h | CC-BY-NC-4.0 |
-| `twi_multispeaker` | [Single-speaker Twi clips](https://huggingface.co/datasets/ghanaopenai/twi-multispeaker-tts), kept only if DNSMOS ≥ 3 and ≥ 70 % speech | up to ~90 h | CC-BY-NC-4.0 |
+| `loud_lounge_twi` | Loud Lounge, keeping only Twi-dominant lines with no backchannels ("Mhm", "Yeah") | ~18 h | CC-BY-NC-4.0 |
+| `jw_twi` | [Clean dubbed/broadcast Twi](https://huggingface.co/datasets/ghanaopenai/new-twi-tts-aligned-ipa), 24 kHz, ~200 speakers, rows with `qc_pass` | ~147 h | CC-BY-NC-4.0 |
+| `twi_multispeaker` | [Single-speaker Twi clips](https://huggingface.co/datasets/ghanaopenai/twi-multispeaker-tts), kept only if DNSMOS ≥ 3 and ≥ 70 % speech. 16 kHz audio, so no detail above 8 kHz | ~65 h | CC-BY-NC-4.0 |
+
+For a clearer voice, the mix suggested in the 2026-11 data survey is
+`--source waxal_twi --source jw_twi --source loud_lounge_twi` (drops the 16 kHz
+`twi_multispeaker` set and the noisy, English-heavy part of Loud Lounge).
 
 Hugging Face sources are streamed, so only kept clips are written to disk (as
 24 kHz wavs). Mixing speakers is fine: F5 clones the voice of the reference clip,
